@@ -51,9 +51,34 @@ confusion_matrix = confusionmat(test_labels_numeric, predicted_classes);
 accuracy = sum(diag(confusion_matrix)) / sum(confusion_matrix(:));
 fprintf('Noggrannhet: %.2f%%\n', accuracy * 100);
 
+
+% Precision, Recall och F1 Score för varje klass
+precision = zeros(num_classes, 1);
+recall = zeros(num_classes, 1);
+f1_score = zeros(num_classes, 1);
+
+for i = 1:num_classes
+    TP = confusion_matrix(i, i); % True Positives
+    FP = sum(confusion_matrix(:, i)) - TP; % False Positives
+    FN = sum(confusion_matrix(i, :)) - TP; % False Negatives
+    
+    % Precision, Recall och F1
+    precision(i) = TP / (TP + FP + eps);
+    recall(i) = TP / (TP + FN + eps);
+    f1_score(i) = 2 * (precision(i) * recall(i)) / (precision(i) + recall(i) + eps);
+end
+
+
+
 % Visa förvirringsmatris
 disp('Förvirringsmatris:');
 disp(confusion_matrix);
+
+disp('Precision, Recall och F1 Score för varje klass:');
+for i = 1:num_classes
+    fprintf('Klass %s: Precision = %.2f, Recall = %.2f, F1 Score = %.2f\n', ...
+            class_labels{i}, precision(i), recall(i), f1_score(i));
+end
 
 % Visa klassmappning
 disp('Klassmappning:');

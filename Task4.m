@@ -1,4 +1,4 @@
-% Optimized Softmax Regression with Second-Order Polynomial Decision Boundaries
+% Optimized Softmax Regression with SGD for Second-Order Polynomial Decision Boundaries
 
 % Load the data
 train_features = readmatrix('Train_Validation_InputFeatures.xlsx');
@@ -25,36 +25,41 @@ test_features_poly = addPolynomialFeatures(test_features);
 
 % Logistic regression parameters
 [m, n] = size(train_features_poly);
-initial_theta = zeros((n + 1) * num_classes, 1); % Flattened weights
+Theta = zeros(n + 1, num_classes); % Initialize weights
 
 % Add intercept term to features
 train_features_poly = [ones(m, 1), train_features_poly];
 test_features_poly = [ones(size(test_features_poly, 1), 1), test_features_poly];
 
-% Optimize using a mini-batch approach to prevent memory overflow
-batch_size = 1000; % Adjust based on system memory
-num_batches = ceil(m / batch_size);
+% Stochastic Gradient Descent (SGD) parameters
+alpha = 0.01; % Learning rate
+num_epochs = 50; % Number of passes through the data
+batch_size = 256; % Mini-batch size
 
-options = optimset('GradObj', 'on', 'MaxIter', 100); % Reduce MaxIter for testing
+% Training with SGD
+for epoch = 1:num_epochs
+    % Shuffle data
+    idx = randperm(m);
+    train_features_poly = train_features_poly(idx, :);
+    train_labels = train_labels(idx, :);
 
-Theta = zeros(n + 1, num_classes); % Initialize Theta
-for batch = 1:num_batches
-    % Define batch indices
-    batch_start = (batch - 1) * batch_size + 1;
-    batch_end = min(batch * batch_size, m);
+    for i = 1:batch_size:m
+        % Mini-batch
+        batch_end = min(i + batch_size - 1, m);
+        X_batch = train_features_poly(i:batch_end, :);
+        Y_batch = train_labels(i:batch_end, :);
 
-    % Extract batch data
-    X_batch = train_features_poly(batch_start:batch_end, :);
-    Y_batch = train_labels(batch_start:batch_end, :);
+        % Compute logits and probabilities
+        logits = X_batch * Theta;
+        probabilities = softmax(logits);
 
-    % Optimize using fminunc
-    [theta, ~] = fminunc(@(t)(softmaxCostFunction(t, X_batch, Y_batch, num_classes)), initial_theta, options);
+        % Compute gradient
+        gradient = -(1 / size(X_batch, 1)) * (X_batch' * (Y_batch - probabilities));
 
-    % Accumulate results
-    Theta = Theta + reshape(theta, n + 1, num_classes);
+        % Update weights
+        Theta = Theta - alpha * gradient;
+    end
 end
-
-Theta = Theta / num_batches; % Average the results across batches
 
 % Predict on test set
 logits = test_features_poly * Theta;
@@ -81,23 +86,6 @@ function polyFeatures = addPolynomialFeatures(X)
             polyFeatures = [polyFeatures, X(:, i) .* X(:, j)];
         end
     end
-end
-
-% Softmax cost function
-function [J, grad] = softmaxCostFunction(theta, X, Y, num_classes)
-    [m, n] = size(X);
-    theta = reshape(theta, n, num_classes);
-
-    % Compute logits and softmax probabilities
-    logits = X * theta;
-    probabilities = softmax(logits);
-
-    % Compute cost
-    J = -(1/m) * sum(sum(Y .* log(probabilities)));
-
-    % Compute gradient
-    grad = -(1/m) * (X' * (Y - probabilities));
-    grad = grad(:); % Flatten gradient for fminunc
 end
 
 % Softmax function

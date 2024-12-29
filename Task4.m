@@ -1,3 +1,6 @@
+clc;
+clear;
+
 % Optimized Softmax Regression with SGD for Second-Order Polynomial Decision Boundaries
 
 % Load the data

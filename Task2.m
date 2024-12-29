@@ -1,3 +1,6 @@
+clc;
+clear;
+
 % One-vs-Rest Logistic Regression with Second-Order Polynomial Decision Boundaries
 
 % Load the data

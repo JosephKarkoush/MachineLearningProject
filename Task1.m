@@ -1,3 +1,6 @@
+clc;
+clear;
+
 % One-vs-Rest Logistic Regression Implementation in MATLAB
 
 % Load the data

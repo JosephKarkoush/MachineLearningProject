@@ -1,3 +1,6 @@
+clc;
+clear;
+
 % Softmax Regression with Linear Decision Boundaries
 
 % Load the data

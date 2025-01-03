@@ -31,13 +31,18 @@ function optimizeSVM()
     lb = [0.01, 0.01];
     ub = [100, 100];
 
-    % Run Genetic Algorithm with Parallelization
+        % Run Genetic Algorithm with Parallelization
     options = optimoptions('ga', 'PopulationSize', 20, 'MaxGenerations', 10, 'Display', 'iter', ...
                            'UseParallel', true);
     [optimizedParams, ~] = ga(fitnessFunction, 2, [], [], [], [], lb, ub, [], options);
 
     C_opt = optimizedParams(1);
     sigma_opt = optimizedParams(2);
+
+    % Print final optimal hyperparameters
+    fprintf('Optimal Box Constraint (C): %.4f\n', C_opt);
+    fprintf('Optimal Kernel Scale (σ): %.4f\n', sigma_opt);
+
 
     %% Train Final SVM Model
     template = templateSVM('KernelFunction', 'rbf', 'BoxConstraint', C_opt, 'KernelScale', sigma_opt);

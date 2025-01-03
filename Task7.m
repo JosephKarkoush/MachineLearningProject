@@ -1,104 +1,113 @@
-% Load Data
-train_input = readtable('Train_Validation_InputFeatures.xlsx');
-train_target = readtable('Train_Validation_TargetValue.xlsx');
-test_input = readtable('Test_InputFeatures.xlsx');
-test_target = readtable('Test_TargetValue.xlsx');
+%% Load the Data
+trainFeatures = readtable('Train_Validation_InputFeatures.xlsx');
+trainTargets = readtable('Train_Validation_TargetValue.xlsx');
+testFeatures = readtable('Test_InputFeatures.xlsx');
+testTargets = readtable('Test_TargetValue.xlsx');
 
-% Preprocess Data
-X_train = table2array(train_input);
-Y_train = grp2idx(train_target.Status); % Convert categorical target to numerical
-X_test = table2array(test_input);
-Y_test = grp2idx(test_target.Status);
+X_train = table2array(trainFeatures);
+Y_train = categorical(table2array(trainTargets)); % Convert to categorical
+X_test = table2array(testFeatures);
+Y_test = categorical(table2array(testTargets)); % Convert to categorical
 
-% Normalize Data
-X_train = normalize(X_train);
-X_test = normalize(X_test);
-
-% Genetic Algorithm Settings
-hidden_layers_range = [1, 3];
-neurons_range = [1, 400];
-activation_functions = {'logsig', 'tansig', 'purelin'}; % Sigmoid, Tanh, ReLU
-lambda_range = [1e-5, 1e-1];
-learning_rate_range = [1e-4, 1e-1];
-
-% Fitness Function
-function fitness = evaluate_hyperparameters(params, X_train, Y_train, activation_functions)
-    layers = round(params(1)); % Ensure layers is an integer
-    neurons = round(params(2)); % Ensure neurons is an integer
-    activation_idx = round(params(3));
-    lambda = params(4);
-    learning_rate = params(5);
-
-    % Create Neural Network
-    net = feedforwardnet(neurons * ones(1, layers)); % Create a network with layers and neurons per layer
-    for i = 1:layers
-        net.layers{i}.transferFcn = activation_functions{activation_idx};
+%% Objective Function for Genetic Algorithm
+function [accuracy, net] = evaluateNN(hiddenLayers, neurons, activation, lambda, learningRate, X_train, Y_train, X_val, Y_val)
+    layers = [featureInputLayer(size(X_train, 2))];
+    
+    % Add hidden layers
+    for i = 1:hiddenLayers
+        % Determine activation function
+        if activation == 1
+            actLayer = reluLayer;
+        elseif activation == 2
+            actLayer = tanhLayer;
+        else
+            actLayer = sigmoidLayer;
+        end
+        layers = [layers, fullyConnectedLayer(neurons, 'WeightsInitializer', 'he'), actLayer];
     end
-    net.performParam.regularization = lambda;
-    net.trainParam.lr = learning_rate;
 
-    % Train Neural Network
-    net.divideParam.trainRatio = 0.7;
-    net.divideParam.valRatio = 0.3;
-    net.divideParam.testRatio = 0;
-    try
-        [net, ~] = train(net, X_train', full(ind2vec(Y_train')));
-        % Validate Neural Network
-        Y_val_pred = net(X_train');
-        Y_val_pred = vec2ind(Y_val_pred);
-        fitness = -sum(Y_val_pred' == Y_train) / length(Y_train); % Maximize accuracy
-    catch
-        fitness = Inf; % Handle training errors
-    end
+    % Add output layer
+    layers = [layers, fullyConnectedLayer(numel(categories(Y_train))), softmaxLayer, classificationLayer];
+
+    options = trainingOptions('adam', ...
+        'MaxEpochs', 50, ...
+        'MiniBatchSize', 64, ...
+        'InitialLearnRate', learningRate, ...
+        'L2Regularization', lambda, ...
+        'Verbose', false, ...
+        'Plots', 'none');
+
+    net = trainNetwork(X_train, Y_train, layers, options);
+    predictions = classify(net, X_val);
+    accuracy = mean(predictions == Y_val);
 end
 
-% Define Genetic Algorithm
-ga_options = optimoptions('ga', 'PopulationSize', 50, 'MaxGenerations', 30, 'Display', 'iter');
-[param_opt, ~] = ga(@(params)evaluate_hyperparameters(params, X_train, Y_train, activation_functions), 5, [], [], [], [], ...
-    [hidden_layers_range(1), neurons_range(1), 1, lambda_range(1), learning_rate_range(1)], ...
-    [hidden_layers_range(2), neurons_range(2), length(activation_functions), lambda_range(2), learning_rate_range(2)], ...
-    [], ga_options);
+%% Genetic Algorithm
+% Bounds for hyperparameters
+lb = [1, 1, 1, 0.0001, 0.0001]; % lower bounds [hiddenLayers, neurons, activation, lambda, learningRate]
+ub = [3, 400, 3, 1, 0.1];     % upper bounds [hiddenLayers, neurons, activation, lambda, learningRate]
 
-% Extract Optimal Parameters
-opt_layers = round(param_opt(1));
-opt_neurons = round(param_opt(2));
-opt_activation = activation_functions{round(param_opt(3))};
-opt_lambda = param_opt(4);
-opt_learning_rate = param_opt(5);
+options = optimoptions('ga', ...
+    'PopulationSize', 20, ...
+    'MaxGenerations', 30, ...
+    'Display', 'iter', ...
+    'UseParallel', true);
 
-% Train Final Neural Network
-final_net = feedforwardnet(opt_neurons * ones(1, opt_layers));
-for i = 1:opt_layers
-    final_net.layers{i}.transferFcn = opt_activation;
+[optimalParams, optimalAccuracy] = ga(@(params) -evaluateNN(round(params(1)), round(params(2)), round(params(3)), params(4), params(5), X_train, Y_train, X_train, Y_train), 5, [], [], [], [], lb, ub, [], options);
+
+%% Train Final Model with Optimal Hyperparameters
+hiddenLayers = round(optimalParams(1));
+neurons = round(optimalParams(2));
+activation = round(optimalParams(3));
+if activation == 1
+    actFunc = 'relu';
+elseif activation == 2
+    actFunc = 'tanh';
+else
+    actFunc = 'sigmoid';
 end
-final_net.performParam.regularization = opt_lambda;
-final_net.trainParam.lr = opt_learning_rate;
-final_net.divideParam.trainRatio = 0.7;
-final_net.divideParam.valRatio = 0.3;
-final_net.divideParam.testRatio = 0;
-[final_net, ~] = train(final_net, X_train', full(ind2vec(Y_train')));
+lambda = optimalParams(4);
+learningRate = optimalParams(5);
 
-% Test Neural Network
-Y_test_pred = final_net(X_test');
-Y_test_pred = vec2ind(Y_test_pred);
+% Build final neural network
+layers = [featureInputLayer(size(X_train, 2))];
+for i = 1:hiddenLayers
+    if activation == 1
+        actLayer = reluLayer;
+    elseif activation == 2
+        actLayer = tanhLayer;
+    else
+        actLayer = sigmoidLayer;
+    end
+    layers = [layers, fullyConnectedLayer(neurons, 'WeightsInitializer', 'he'), actLayer];
+end
+layers = [layers, fullyConnectedLayer(numel(categories(Y_train))), softmaxLayer, classificationLayer];
 
-% Performance Metrics
-confusion_mat = confusionmat(Y_test, Y_test_pred);
-accuracy = sum(Y_test_pred' == Y_test) / length(Y_test);
-precision = diag(confusion_mat) ./ sum(confusion_mat, 2);
-recall = diag(confusion_mat) ./ sum(confusion_mat, 1)';
-f1_score = 2 * (precision .* recall) ./ (precision + recall);
+options = trainingOptions('adam', ...
+    'MaxEpochs', 50, ...
+    'MiniBatchSize', 64, ...
+    'InitialLearnRate', learningRate, ...
+    'L2Regularization', lambda, ...
+    'Verbose', false);
 
-% Display Results
+finalNet = trainNetwork(X_train, Y_train, layers, options);
+predictions = classify(finalNet, X_test);
+
+%% Evaluate Performance
+confusionMatrix = confusionmat(Y_test, predictions);
+accuracy = mean(predictions == Y_test);
+precision = diag(confusionMatrix) ./ sum(confusionMatrix, 2);
+recall = diag(confusionMatrix) ./ sum(confusionMatrix, 1)';
+f1Score = 2 * (precision .* recall) ./ (precision + recall);
+
 fprintf('Optimal Hyperparameters:\n');
-fprintf('Number of Hidden Layers: %d\n', opt_layers);
-fprintf('Number of Neurons per Layer: %d\n', opt_neurons);
-fprintf('Activation Function: %s\n', opt_activation);
-fprintf('Regularization Parameter: %.5f\n', opt_lambda);
-fprintf('Learning Rate: %.5f\n', opt_learning_rate);
-
-fprintf('Performance Metrics:\n');
-fprintf('Accuracy: %.2f\n', accuracy);
-fprintf('Precision: %.2f\n', mean(precision, 'omitnan'));
-fprintf('Recall: %.2f\n', mean(recall, 'omitnan'));
-fprintf('F1 Score: %.2f\n', mean(f1_score, 'omitnan'));
+fprintf('Number of Hidden Layers: %d\n', hiddenLayers);
+fprintf('Number of Neurons: %d\n', neurons);
+fprintf('Activation Function: %s\n', actFunc);
+fprintf('Regularization Parameter: %f\n', lambda);
+fprintf('Learning Rate: %f\n', learningRate);
+fprintf('\nPerformance Metrics:\n');
+fprintf('Accuracy: %f\n', accuracy);
+fprintf('Precision: %f\n', mean(precision));
+fprintf('Recall: %f\n', mean(recall));
+fprintf('F1 Score: %f\n', mean(f1Score));

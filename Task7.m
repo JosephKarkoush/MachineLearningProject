@@ -1,122 +1,104 @@
-% Load data
+% Load Data
 train_input = readtable('Train_Validation_InputFeatures.xlsx');
 train_target = readtable('Train_Validation_TargetValue.xlsx');
 test_input = readtable('Test_InputFeatures.xlsx');
 test_target = readtable('Test_TargetValue.xlsx');
 
-% Convert tables to arrays
-train_input = table2array(train_input);
-train_target = table2array(train_target);
-test_input = table2array(test_input);
-test_target = table2array(test_target);
+% Preprocess Data
+X_train = table2array(train_input);
+Y_train = grp2idx(train_target.Status); % Convert categorical target to numerical
+X_test = table2array(test_input);
+Y_test = grp2idx(test_target.Status);
 
-% Convert categorical target values to one-hot encoding
-if iscell(train_target)
-    train_target = cellfun(@str2double, train_target); % Convert cell to numeric if necessary
-end
-if iscell(test_target)
-    test_target = cellfun(@str2double, test_target); % Convert cell to numeric if necessary
-end
+% Normalize Data
+X_train = normalize(X_train);
+X_test = normalize(X_test);
 
-train_target = round(train_target); % Ensure integer values
-test_target = round(test_target);
+% Genetic Algorithm Settings
+hidden_layers_range = [1, 3];
+neurons_range = [1, 400];
+activation_functions = {'logsig', 'tansig', 'purelin'}; % Sigmoid, Tanh, ReLU
+lambda_range = [1e-5, 1e-1];
+learning_rate_range = [1e-4, 1e-1];
 
-uniqueClasses = unique(train_target);
-if ~isequal(uniqueClasses, 1:numel(uniqueClasses))
-    [~, ~, train_target] = unique(train_target); % Relabel classes to 1, 2, 3, ...
-    [~, ~, test_target] = unique(test_target);
-end
-
-numClasses = numel(unique(train_target));
-train_target = ind2vec(train_target'); % Convert to one-hot
-test_target = ind2vec(test_target');   % Convert to one-hot
-
-% Define the genetic algorithm objective function
-function error = objectiveFcn(params, train_input, train_target)
-    numLayers = round(params(1));
-    numNeurons = round(params(2));
-    activationFcnIdx = round(params(3));
+% Fitness Function
+function fitness = evaluate_hyperparameters(params, X_train, Y_train, activation_functions)
+    layers = round(params(1)); % Ensure layers is an integer
+    neurons = round(params(2)); % Ensure neurons is an integer
+    activation_idx = round(params(3));
     lambda = params(4);
-    activationFcns = {'logsig', 'relu', 'tansig'};
-    activationFcn = activationFcns{activationFcnIdx};
+    learning_rate = params(5);
 
-    % Define neural network structure
-    net = patternnet(repmat(numNeurons, 1, numLayers));
-    for i = 1:numLayers
-        net.layers{i}.transferFcn = activationFcn;
+    % Create Neural Network
+    net = feedforwardnet(neurons * ones(1, layers)); % Create a network with layers and neurons per layer
+    for i = 1:layers
+        net.layers{i}.transferFcn = activation_functions{activation_idx};
     end
-
-    % Set regularization parameter
     net.performParam.regularization = lambda;
+    net.trainParam.lr = learning_rate;
 
-    % Perform k-fold cross-validation
-    k = 5;
-    cv = cvpartition(size(train_input, 1), 'KFold', k);
-    accuracies = zeros(k, 1);
-
-    for fold = 1:k
-        trainIdx = training(cv, fold);
-        valIdx = test(cv, fold);
-
-        net = train(net, train_input(trainIdx, :)', train_target(:, trainIdx));
-        predictions = net(train_input(valIdx, :)');
-
-        % Calculate accuracy
-        [~, predLabels] = max(predictions);
-        [~, trueLabels] = max(train_target(:, valIdx));
-        accuracies(fold) = sum(predLabels == trueLabels) / length(trueLabels);
+    % Train Neural Network
+    net.divideParam.trainRatio = 0.7;
+    net.divideParam.valRatio = 0.3;
+    net.divideParam.testRatio = 0;
+    try
+        [net, ~] = train(net, X_train', full(ind2vec(Y_train')));
+        % Validate Neural Network
+        Y_val_pred = net(X_train');
+        Y_val_pred = vec2ind(Y_val_pred);
+        fitness = -sum(Y_val_pred' == Y_train) / length(Y_train); % Maximize accuracy
+    catch
+        fitness = Inf; % Handle training errors
     end
-
-    % Objective function value: negative mean accuracy
-    error = -mean(accuracies);
 end
 
-% Set bounds for hyperparameters
-lb = [1, 1, 1, 0]; % Min values: 1 layer, 1 neuron, sigmoid activation, 0 regularization
-ub = [3, 400, 3, 1]; % Max values: 3 layers, 400 neurons, 3 activations, max reg.
+% Define Genetic Algorithm
+ga_options = optimoptions('ga', 'PopulationSize', 50, 'MaxGenerations', 30, 'Display', 'iter');
+[param_opt, ~] = ga(@(params)evaluate_hyperparameters(params, X_train, Y_train, activation_functions), 5, [], [], [], [], ...
+    [hidden_layers_range(1), neurons_range(1), 1, lambda_range(1), learning_rate_range(1)], ...
+    [hidden_layers_range(2), neurons_range(2), length(activation_functions), lambda_range(2), learning_rate_range(2)], ...
+    [], ga_options);
 
-% Perform optimization
-options = optimoptions('ga', 'Display', 'iter', 'PopulationSize', 20, 'MaxGenerations', 50);
-[optParams, ~] = ga(@(params) objectiveFcn(params, train_input, train_target), ...
-                    4, [], [], [], [], lb, ub, [], options);
+% Extract Optimal Parameters
+opt_layers = round(param_opt(1));
+opt_neurons = round(param_opt(2));
+opt_activation = activation_functions{round(param_opt(3))};
+opt_lambda = param_opt(4);
+opt_learning_rate = param_opt(5);
 
-% Extract optimal hyperparameters
-optLayers = round(optParams(1));
-optNeurons = round(optParams(2));
-optActivationFcnIdx = round(optParams(3));
-optLambda = optParams(4);
-activationFcns = {'logsig', 'relu', 'tansig'};
-optActivationFcn = activationFcns{optActivationFcnIdx};
+% Train Final Neural Network
+final_net = feedforwardnet(opt_neurons * ones(1, opt_layers));
+for i = 1:opt_layers
+    final_net.layers{i}.transferFcn = opt_activation;
+end
+final_net.performParam.regularization = opt_lambda;
+final_net.trainParam.lr = opt_learning_rate;
+final_net.divideParam.trainRatio = 0.7;
+final_net.divideParam.valRatio = 0.3;
+final_net.divideParam.testRatio = 0;
+[final_net, ~] = train(final_net, X_train', full(ind2vec(Y_train')));
 
+% Test Neural Network
+Y_test_pred = final_net(X_test');
+Y_test_pred = vec2ind(Y_test_pred);
+
+% Performance Metrics
+confusion_mat = confusionmat(Y_test, Y_test_pred);
+accuracy = sum(Y_test_pred' == Y_test) / length(Y_test);
+precision = diag(confusion_mat) ./ sum(confusion_mat, 2);
+recall = diag(confusion_mat) ./ sum(confusion_mat, 1)';
+f1_score = 2 * (precision .* recall) ./ (precision + recall);
+
+% Display Results
 fprintf('Optimal Hyperparameters:\n');
-fprintf('Number of Layers: %d\n', optLayers);
-fprintf('Number of Neurons per Layer: %d\n', optNeurons);
-fprintf('Activation Function: %s\n', optActivationFcn);
-fprintf('Regularization Parameter: %.4f\n', optLambda);
+fprintf('Number of Hidden Layers: %d\n', opt_layers);
+fprintf('Number of Neurons per Layer: %d\n', opt_neurons);
+fprintf('Activation Function: %s\n', opt_activation);
+fprintf('Regularization Parameter: %.5f\n', opt_lambda);
+fprintf('Learning Rate: %.5f\n', opt_learning_rate);
 
-% Train final model
-finalNet = patternnet(repmat(optNeurons, 1, optLayers));
-for i = 1:optLayers
-    finalNet.layers{i}.transferFcn = optActivationFcn;
-end
-finalNet.performParam.regularization = optLambda;
-finalNet = train(finalNet, train_input', train_target);
-
-% Test the final model
-predictions = finalNet(test_input');
-[~, predLabels] = max(predictions);
-[~, trueLabels] = max(test_target);
-
-% Evaluate performance
-confMatrix = confusionmat(trueLabels, predLabels);
-accuracy = sum(diag(confMatrix)) / sum(confMatrix(:));
-precision = diag(confMatrix) ./ sum(confMatrix, 2);
-recall = diag(confMatrix) ./ sum(confMatrix, 1)';
-F1 = 2 * (precision .* recall) ./ (precision + recall);
-
-fprintf('Confusion Matrix:\n');
-disp(confMatrix);
-fprintf('Accuracy: %.4f\n', accuracy);
-fprintf('Precision: %.4f\n', mean(precision, 'omitnan'));
-fprintf('Recall: %.4f\n', mean(recall, 'omitnan'));
-fprintf('F1 Score: %.4f\n', mean(F1, 'omitnan'));
+fprintf('Performance Metrics:\n');
+fprintf('Accuracy: %.2f\n', accuracy);
+fprintf('Precision: %.2f\n', mean(precision, 'omitnan'));
+fprintf('Recall: %.2f\n', mean(recall, 'omitnan'));
+fprintf('F1 Score: %.2f\n', mean(f1_score, 'omitnan'));

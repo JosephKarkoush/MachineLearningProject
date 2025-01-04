@@ -1,79 +1,84 @@
-clc;
-clear;
+% Load the training-validation and test data
+train_input = readtable('Train_Validation_InputFeatures.xlsx');
+train_labels = readtable('Train_Validation_TargetValue.xlsx');
+test_input = readtable('Test_InputFeatures.xlsx');
+test_labels = readtable('Test_TargetValue.xlsx');
 
-%% Load Data
-% Load training and test data from the provided Excel files
-trainFeatures = readmatrix('Train_Validation_InputFeatures.xlsx');
-trainLabels = readtable('Train_Validation_TargetValue.xlsx');
-testFeatures = readmatrix('Test_InputFeatures.xlsx');
-testLabels = readtable('Test_TargetValue.xlsx');
+% Convert tables to matrices
+X_train = table2array(train_input);
+y_train = categorical(train_labels.Status);
+X_test = table2array(test_input);
+y_test = categorical(test_labels.Status);
 
-% Convert labels to categorical for classification
-trainLabels = categorical(trainLabels.Status);
-testLabels = categorical(testLabels.Status);
+% Normalize the input features
+X_train = normalize(X_train);
+X_test = normalize(X_test);
 
-%% Genetic Algorithm Setup
-% Define the objective function for GA optimization
-objectiveFcn = @(params) knnCrossValObjective(params, trainFeatures, trainLabels);
+% Define the objective function for the genetic algorithm
+knn_objective = @(params) knnObjectiveFunction(params, X_train, y_train);
 
-% Define parameter bounds
-lb = [1, 1]; % Minimum k = 1, distance type index = 1
-ub = [200, 3]; % Maximum k = 200, distance type index = 3
+% Set up genetic algorithm options
+lb = [1, 1]; % Lower bounds (k, distance type index)
+ub = [200, 3]; % Upper bounds (k, distance type index)
+options = optimoptions('ga', 'MaxGenerations', 50, 'PopulationSize', 20, 'Display', 'iter');
 
-% Genetic Algorithm options
-options = optimoptions('ga', ...
-    'MaxGenerations', 50, ...
-    'PopulationSize', 30, ...
-    'Display', 'iter');
+% Run genetic algorithm
+optimal_params = ga(knn_objective, 2, [], [], [], [], lb, ub, [], options);
 
-% Run Genetic Algorithm
-[bestParams, bestAccuracy] = ga(objectiveFcn, 2, [], [], [], [], lb, ub, [], options);
+% Extract optimal hyperparameters
+k_optimal = round(optimal_params(1));
+% Define the possible distance metrics
+distance_metrics = {'cityblock', 'chebychev', 'euclidean'};
 
-% Extract best parameters
-bestK = round(bestParams(1));
-distanceTypes = {'cityblock', 'chebychev', 'euclidean'};
-bestDistanceType = distanceTypes{round(bestParams(2))};
+% Use proper indexing to select the optimal distance metric
+distance_metric_optimal = distance_metrics{round(optimal_params(2))};
 
-fprintf('Best k: %d\n', bestK);
-fprintf('Best distance type: %s\n', bestDistanceType);
+% Train final KNN model
+final_knn = fitcknn(X_train, y_train, 'NumNeighbors', k_optimal, 'Distance', distance_metric_optimal);
 
-%% Train Final KNN Model
-finalModel = fitcknn(trainFeatures, trainLabels, ...
-    'NumNeighbors', bestK, ...
-    'Distance', bestDistanceType);
+% Evaluate performance on test data
+y_pred_test = predict(final_knn, X_test);
+conf_matrix = confusionmat(y_test, y_pred_test);
 
-%% Test the Model
-predictedLabels = predict(finalModel, testFeatures);
-accuracy = sum(predictedLabels == testLabels) / numel(testLabels);
+% Calculate evaluation metrics
+accuracy = mean(y_pred_test == y_test);
+precision = diag(conf_matrix) ./ sum(conf_matrix, 2);
+recall = diag(conf_matrix) ./ sum(conf_matrix, 1)';
+F1 = 2 * (precision .* recall) ./ (precision + recall);
 
-fprintf('Test Accuracy: %.2f%%\n', accuracy * 100);
+% Display results
+fprintf('Optimal Number of Neighbors: %d\n', k_optimal);
+fprintf('Optimal Distance Metric: %s\n', distance_metric_optimal);
 
-%% Objective Function for Cross-Validation
-function accuracy = knnCrossValObjective(params, features, labels)
+fprintf('Confusion Matrix:\n');
+disp(conf_matrix);
+
+fprintf('Accuracy: %.2f\n', accuracy);
+fprintf('Precision: %.2f\n', mean(precision, 'omitnan'));
+fprintf('Recall: %.2f\n', mean(recall, 'omitnan'));
+fprintf('F1 Score: %.2f\n', mean(F1, 'omitnan'));
+
+% Define the objective function for cross-validation
+function score = knnObjectiveFunction(params, X, y)
     k = round(params(1));
-    distanceTypes = {'cityblock', 'chebychev', 'euclidean'};
-    distance = distanceTypes{round(params(2))};
-
+    distance_metrics = {'cityblock', 'chebychev', 'euclidean'};
+    distance_type = distance_metrics{round(params(2))};
+    
     % Perform k-fold cross-validation
-    cv = cvpartition(labels, 'KFold', 5);
-    accuracies = zeros(cv.NumTestSets, 1);
-
+    cv = cvpartition(y, 'KFold', 5);
+    acc = zeros(cv.NumTestSets, 1);
+    
     for i = 1:cv.NumTestSets
-        trainIdx = training(cv, i);
-        testIdx = test(cv, i);
-
-        % Train KNN model
-        model = fitcknn(features(trainIdx, :), labels(trainIdx), ...
-            'NumNeighbors', k, 'Distance', distance);
-
-        % Evaluate on validation set
-        predictions = predict(model, features(testIdx, :));
-        accuracies(i) = sum(predictions == labels(testIdx)) / numel(predictions);
+        X_train_cv = X(training(cv, i), :);
+        y_train_cv = y(training(cv, i));
+        X_valid_cv = X(test(cv, i), :);
+        y_valid_cv = y(test(cv, i));
+        
+        mdl = fitcknn(X_train_cv, y_train_cv, 'NumNeighbors', k, 'Distance', distance_type);
+        y_pred = predict(mdl, X_valid_cv);
+        acc(i) = mean(y_pred == y_valid_cv);
     end
-
-    % Return the negative mean accuracy as the objective to minimize
-    accuracy = -mean(accuracies);
+    
+    % Minimize the negative mean accuracy
+    score = -mean(acc);
 end
-
-
-%%dsdsd

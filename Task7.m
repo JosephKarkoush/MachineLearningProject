@@ -1,113 +1,123 @@
-%% Load the Data
-trainFeatures = readtable('Train_Validation_InputFeatures.xlsx');
-trainTargets = readtable('Train_Validation_TargetValue.xlsx');
-testFeatures = readtable('Test_InputFeatures.xlsx');
-testTargets = readtable('Test_TargetValue.xlsx');
+% Load data
+data_train = table2array(readtable('Train_Validation_InputFeatures.xlsx'));
+labels_train = dummyvar(categorical(readtable('Train_Validation_TargetValue.xlsx').Status));
+data_test = table2array(readtable('Test_InputFeatures.xlsx'));
+labels_test = categorical(readtable('Test_TargetValue.xlsx').Status);
 
-X_train = table2array(trainFeatures);
-Y_train = categorical(table2array(trainTargets)); % Convert to categorical
-X_test = table2array(testFeatures);
-Y_test = categorical(table2array(testTargets)); % Convert to categorical
+% Normalize input data
+[data_train, mu, sigma] = zscore(data_train);
+data_test = (data_test - mu) ./ sigma;
 
-%% Objective Function for Genetic Algorithm
-function [accuracy, net] = evaluateNN(hiddenLayers, neurons, activation, lambda, learningRate, X_train, Y_train, X_val, Y_val)
-    layers = [featureInputLayer(size(X_train, 2))];
-    
-    % Add hidden layers
-    for i = 1:hiddenLayers
-        % Determine activation function
-        if activation == 1
-            actLayer = reluLayer;
-        elseif activation == 2
-            actLayer = tanhLayer;
-        else
-            actLayer = sigmoidLayer;
-        end
-        layers = [layers, fullyConnectedLayer(neurons, 'WeightsInitializer', 'he'), actLayer];
-    end
+% K-fold cross-validation setup
+k = 5;
+kfold = cvpartition(size(labels_train, 1), 'KFold', k);
 
-    % Add output layer
-    layers = [layers, fullyConnectedLayer(numel(categories(Y_train))), softmaxLayer, classificationLayer];
+% Hyperparameter bounds
+lb = [1, 50, 1, 0.0001]; % Reduce upper bounds
+ub = [3, 200, 3, 0.1];
 
-    options = trainingOptions('adam', ...
-        'MaxEpochs', 50, ...
-        'MiniBatchSize', 64, ...
-        'InitialLearnRate', learningRate, ...
-        'L2Regularization', lambda, ...
-        'Verbose', false, ...
-        'Plots', 'none');
+% Genetic Algorithm settings
+opts = optimoptions('ga', 'MaxGenerations', 20, 'PopulationSize', 10, ...
+    'Display', 'iter', 'UseParallel', true);
 
-    net = trainNetwork(X_train, Y_train, layers, options);
-    predictions = classify(net, X_val);
-    accuracy = mean(predictions == Y_val);
+% Fitness function
+fitnessFcn = @(x) crossValidationFitness(x, data_train, labels_train, kfold);
+[bestParams, ~] = ga(fitnessFcn, 4, [], [], [], [], lb, ub, [], opts);
+
+% Extract optimal hyperparameters
+numHiddenLayers = round(bestParams(1));
+numNeurons = round(bestParams(2));
+activationFuncIndex = round(bestParams(3));
+regularizationLambda = bestParams(4);
+activationFunctions = {'logsig', 'poslin', 'tansig'};
+activationFunc = activationFunctions{activationFuncIndex};
+
+% Train final neural network
+net = patternnet(repmat(numNeurons, 1, numHiddenLayers), 'trainrp');
+for i = 1:numHiddenLayers
+    net.layers{i}.transferFcn = activationFunc;
 end
+net.performParam.regularization = regularizationLambda;
+[net, tr] = train(net, data_train', labels_train');
 
-%% Genetic Algorithm
-% Bounds for hyperparameters
-lb = [1, 1, 1, 0.0001, 0.0001]; % lower bounds [hiddenLayers, neurons, activation, lambda, learningRate]
-ub = [3, 400, 3, 1, 0.1];     % upper bounds [hiddenLayers, neurons, activation, lambda, learningRate]
+% Evaluate on test set
+predictions = net(data_test');
+[~, predLabels] = max(predictions, [], 1);
 
-options = optimoptions('ga', ...
-    'PopulationSize', 20, ...
-    'MaxGenerations', 30, ...
-    'Display', 'iter', ...
-    'UseParallel', true);
+% Convert categorical test labels to numeric
+actualLabels = double(labels_test);
 
-[optimalParams, optimalAccuracy] = ga(@(params) -evaluateNN(round(params(1)), round(params(2)), round(params(3)), params(4), params(5), X_train, Y_train, X_train, Y_train), 5, [], [], [], [], lb, ub, [], options);
+% Calculate confusion matrix
+confMatrix = confusionmat(actualLabels, predLabels');
 
-%% Train Final Model with Optimal Hyperparameters
-hiddenLayers = round(optimalParams(1));
-neurons = round(optimalParams(2));
-activation = round(optimalParams(3));
-if activation == 1
-    actFunc = 'relu';
-elseif activation == 2
-    actFunc = 'tanh';
-else
-    actFunc = 'sigmoid';
-end
-lambda = optimalParams(4);
-learningRate = optimalParams(5);
+% Calculate per-class metrics
+precision = diag(confMatrix) ./ sum(confMatrix, 2);
+recall = diag(confMatrix) ./ sum(confMatrix, 1)';
+f1score = 2 * (precision .* recall) ./ (precision + recall);
 
-% Build final neural network
-layers = [featureInputLayer(size(X_train, 2))];
-for i = 1:hiddenLayers
-    if activation == 1
-        actLayer = reluLayer;
-    elseif activation == 2
-        actLayer = tanhLayer;
-    else
-        actLayer = sigmoidLayer;
-    end
-    layers = [layers, fullyConnectedLayer(neurons, 'WeightsInitializer', 'he'), actLayer];
-end
-layers = [layers, fullyConnectedLayer(numel(categories(Y_train))), softmaxLayer, classificationLayer];
+% Handle NaN cases
+precision(isnan(precision)) = 0;
+recall(isnan(recall)) = 0;
+f1score(isnan(f1score)) = 0;
 
-options = trainingOptions('adam', ...
-    'MaxEpochs', 50, ...
-    'MiniBatchSize', 64, ...
-    'InitialLearnRate', learningRate, ...
-    'L2Regularization', lambda, ...
-    'Verbose', false);
+% Calculate overall metrics
+macroPrecision = mean(precision);
+macroRecall = mean(recall);
+macroF1Score = mean(f1score);
 
-finalNet = trainNetwork(X_train, Y_train, layers, options);
-predictions = classify(finalNet, X_test);
+% Micro-average metrics
+totalTruePositives = sum(diag(confMatrix));
+totalPredictedPositives = sum(confMatrix, 'all');
+microPrecision = totalTruePositives / totalPredictedPositives;
 
-%% Evaluate Performance
-confusionMatrix = confusionmat(Y_test, predictions);
-accuracy = mean(predictions == Y_test);
-precision = diag(confusionMatrix) ./ sum(confusionMatrix, 2);
-recall = diag(confusionMatrix) ./ sum(confusionMatrix, 1)';
-f1Score = 2 * (precision .* recall) ./ (precision + recall);
+microRecall = totalTruePositives / sum(sum(confMatrix, 2)); % Same as micro precision here
+microF1Score = 2 * (microPrecision * microRecall) / (microPrecision + microRecall);
 
+% Print results
+fprintf('Accuracy: %.2f%%\n', mean(predLabels' == actualLabels) * 100);
+fprintf('Confusion Matrix:\n');
+disp(confMatrix);
+fprintf('Macro Precision: %.4f\n', macroPrecision);
+fprintf('Macro Recall: %.4f\n', macroRecall);
+fprintf('Macro F1 Score: %.4f\n', macroF1Score);
+fprintf('Micro Precision: %.4f\n', microPrecision);
+fprintf('Micro Recall: %.4f\n', microRecall);
+fprintf('Micro F1 Score: %.4f\n', microF1Score);
+
+% Display optimal hyperparameters
 fprintf('Optimal Hyperparameters:\n');
-fprintf('Number of Hidden Layers: %d\n', hiddenLayers);
-fprintf('Number of Neurons: %d\n', neurons);
-fprintf('Activation Function: %s\n', actFunc);
-fprintf('Regularization Parameter: %f\n', lambda);
-fprintf('Learning Rate: %f\n', learningRate);
-fprintf('\nPerformance Metrics:\n');
-fprintf('Accuracy: %f\n', accuracy);
-fprintf('Precision: %f\n', mean(precision));
-fprintf('Recall: %f\n', mean(recall));
-fprintf('F1 Score: %f\n', mean(f1Score));
+fprintf('Number of Hidden Layers: %d\n', numHiddenLayers);
+fprintf('Number of Neurons per Layer: %d\n', numNeurons);
+fprintf('Activation Function: %s\n', activationFunc);
+fprintf('Regularization Lambda: %.5f\n', regularizationLambda);
+
+function fitness = crossValidationFitness(params, data, labels, kfold)
+    numHiddenLayers = round(params(1));
+    numNeurons = round(params(2));
+    activationFuncIndex = round(params(3));
+    regularizationLambda = params(4);
+
+    activationFunctions = {'logsig', 'poslin', 'tansig'};
+    activationFunc = activationFunctions{activationFuncIndex};
+
+    foldAccuracies = zeros(kfold.NumTestSets, 1);
+
+    parfor fold = 1:kfold.NumTestSets
+        trainIdx = training(kfold, fold);
+        testIdx = test(kfold, fold);
+
+        net = patternnet(repmat(numNeurons, 1, numHiddenLayers), 'trainrp');
+        for i = 1:numHiddenLayers
+            net.layers{i}.transferFcn = activationFunc;
+        end
+        net.performParam.regularization = regularizationLambda;
+
+        net = train(net, data(trainIdx, :)', labels(trainIdx, :)');
+        predictions = net(data(testIdx, :)');
+        [~, predLabels] = max(predictions, [], 1);
+        actualLabels = vec2ind(labels(testIdx, :)');
+        foldAccuracies(fold) = mean(predLabels == actualLabels);
+    end
+
+    fitness = -mean(foldAccuracies);
+end

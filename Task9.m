@@ -44,11 +44,18 @@ predicted_labels = predict(finalModel, test_features);
 
 % Evaluate performance
 confMat = confusionmat(test_labels_num, predicted_labels);
+
+% Calculate metrics
 accuracy = sum(diag(confMat)) / sum(confMat(:));
 precision = diag(confMat) ./ sum(confMat, 1)';
 recall = diag(confMat) ./ sum(confMat, 2);
 f1Score = 2 * (precision .* recall) ./ (precision + recall);
 
+% Display confusion matrix
+disp('Confusion Matrix:');
+disp(confMat);
+
+% Display performance metrics
 fprintf('Performance Metrics:\n');
 fprintf('Accuracy: %.2f%%\n', accuracy * 100);
 fprintf('Precision: %.2f\n', mean(precision, 'omitnan'));

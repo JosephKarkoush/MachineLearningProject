@@ -78,6 +78,44 @@ accuracy = mean(correct_predictions) * 100;
 
 fprintf('Test Accuracy: %.2f%%\n', accuracy);
 
+% Calculate confusion matrix
+conf_matrix = confusionmat(test_target.Status, predicted_labels);
+disp('Confusion Matrix:');
+disp(conf_matrix);
+
+% Calculate precision, recall, and F1 score
+precision = zeros(1, num_classes);
+recall = zeros(1, num_classes);
+f1_score = zeros(1, num_classes);
+
+for i = 1:num_classes
+    tp = conf_matrix(i, i);
+    fp = sum(conf_matrix(:, i)) - tp;
+    fn = sum(conf_matrix(i, :)) - tp;
+
+    precision(i) = tp / (tp + fp);
+    recall(i) = tp / (tp + fn);
+    f1_score(i) = 2 * (precision(i) * recall(i)) / (precision(i) + recall(i));
+end
+
+% Display precision, recall, and F1 score for each class
+for i = 1:num_classes
+    fprintf('Class %s:\n', classes{i});
+    fprintf('  Precision: %.2f\n', precision(i) * 100);
+    fprintf('  Recall: %.2f\n', recall(i) * 100);
+    fprintf('  F1 Score: %.2f\n', f1_score(i) * 100);
+end
+
+% Display macro-averaged metrics
+macro_precision = mean(precision);
+macro_recall = mean(recall);
+macro_f1_score = mean(f1_score);
+
+fprintf('Macro-averaged Metrics:\n');
+fprintf('  Precision: %.2f\n', macro_precision * 100);
+fprintf('  Recall: %.2f\n', macro_recall * 100);
+fprintf('  F1 Score: %.2f\n', macro_f1_score * 100);
+
 % Function to add second-order polynomial features
 function polyFeatures = addPolynomialFeatures(X)
     [m, n] = size(X);

@@ -1,70 +1,29 @@
 clc;
 clear;
 
-% One-vs-Rest Logistic Regression with Second-Order Polynomial Decision Boundaries
+%% Load Data
+% Load training and testing data
+trainInput = readmatrix('Train_Validation_InputFeatures.xlsx');
+trainTarget = readtable('Train_Validation_TargetValue.xlsx');
+testInput = readmatrix('Test_InputFeatures.xlsx');
+testTarget = readtable('Test_TargetValue.xlsx');
 
-% Load the data
-train_features = readmatrix('Train_Validation_InputFeatures.xlsx');
-train_target = readtable('Train_Validation_TargetValue.xlsx');
-test_features = readmatrix('Test_InputFeatures.xlsx');
-test_target = readtable('Test_TargetValue.xlsx');
+% Convert categorical target values to numeric labels
+categories = unique(trainTarget.Status);
+numClasses = numel(categories);
+trainLabels = zeros(size(trainTarget.Status, 1), 1);
+testLabels = zeros(size(testTarget.Status, 1), 1);
 
-% Extract unique classes from the target labels
-classes = unique(train_target.Status);
-num_classes = length(classes);
-
-% Convert categorical labels to numerical for one-vs-rest
-train_labels = zeros(size(train_target.Status, 1), num_classes);
-test_labels = zeros(size(test_target.Status, 1), num_classes);
-
-for i = 1:num_classes
-    train_labels(:, i) = strcmp(train_target.Status, classes{i});
-    test_labels(:, i) = strcmp(test_target.Status, classes{i});
+for i = 1:numClasses
+    trainLabels(strcmp(trainTarget.Status, categories{i})) = i;
+    testLabels(strcmp(testTarget.Status, categories{i})) = i;
 end
 
-% Add polynomial features (second-order)
-train_features_poly = addPolynomialFeatures(train_features);
-test_features_poly = addPolynomialFeatures(test_features);
-
-% Logistic regression parameters
-[m, n] = size(train_features_poly);
-theta = zeros(n + 1, num_classes); % Initialize weights (+1 for intercept)
-
-% Add intercept term to features
-train_features_poly = [ones(m, 1), train_features_poly];
-test_features_poly = [ones(size(test_features_poly, 1), 1), test_features_poly];
-
-% Train one logistic regression model per class
-for c = 1:num_classes
-    % Define options for optimization
-    options = optimset('GradObj', 'on', 'MaxIter', 400);
-
-    % Initialize initial weights
-    initial_theta = zeros(n + 1, 1);
-
-    % Optimize using fminunc
-    [theta(:, c), ~] = fminunc(@(t)(costFunction(t, train_features_poly, train_labels(:, c))), initial_theta, options);
-end
-
-% Predict on test set
-predictions = sigmoid(test_features_poly * theta);
-[~, predicted_class] = max(predictions, [], 2);
-
-% Convert numerical predictions to class labels
-predicted_labels = classes(predicted_class);
-
-% Calculate accuracy
-correct_predictions = strcmp(predicted_labels, test_target.Status);
-accuracy = mean(correct_predictions) * 100;
-
-fprintf('Test Accuracy: %.2f%%\n', accuracy);
-
-% Function to add second-order polynomial features
-function polyFeatures = addPolynomialFeatures(X)
-    [m, n] = size(X);
+%% Polynomial Feature Expansion
+function polyFeatures = expandPolynomialFeatures(X)
+    % Add polynomial features (up to second order)
+    n = size(X, 2);
     polyFeatures = X;
-    
-    % Add pairwise and squared terms
     for i = 1:n
         for j = i:n
             polyFeatures = [polyFeatures, X(:, i) .* X(:, j)];
@@ -72,21 +31,67 @@ function polyFeatures = addPolynomialFeatures(X)
     end
 end
 
-% Logistic regression cost function
-function [J, grad] = costFunction(theta, X, y)
-    m = length(y); % Number of training examples
+trainInputPoly = expandPolynomialFeatures(trainInput);
+testInputPoly = expandPolynomialFeatures(testInput);
 
-    % Hypothesis
-    h = sigmoid(X * theta);
+%% Logistic Regression Training (One-vs-Rest)
+models = cell(numClasses, 1);
+options = optimoptions('fminunc', 'GradObj', 'on', 'MaxIter', 400);
 
-    % Cost function
-    J = (1/m) * (-y' * log(h) - (1 - y)' * log(1 - h));
+for i = 1:numClasses
+    fprintf('Training classifier for class %s...\n', categories{i});
+    initialTheta = zeros(size(trainInputPoly, 2), 1);
+    binaryLabels = (trainLabels == i);
 
-    % Gradient
-    grad = (1/m) * (X' * (h - y));
+    % Compute class weights
+    weight = sum(binaryLabels == 0) / sum(binaryLabels == 1);
+    classWeights = binaryLabels * weight + (1 - binaryLabels);
+
+    [theta, ~] = fminunc(@(t)(costFunctionWeighted(t, trainInputPoly, binaryLabels, classWeights)), initialTheta, options);
+    models{i} = theta;
 end
 
-% Sigmoid function
+%% Prediction Function
+function pred = predictOneVsRest(models, X)
+    numClasses = numel(models);
+    probabilities = zeros(size(X, 1), numClasses);
+    for i = 1:numClasses
+        probabilities(:, i) = sigmoid(X * models{i});
+    end
+    [~, pred] = max(probabilities, [], 2);
+end
+
+%% Evaluate Performance
+predTest = predictOneVsRest(models, testInputPoly);
+confusionMat = confusionmat(testLabels, predTest);
+accuracy = sum(diag(confusionMat)) / sum(confusionMat(:));
+
+precision = diag(confusionMat) ./ sum(confusionMat, 1)';
+recall = diag(confusionMat) ./ sum(confusionMat, 2);
+f1Score = 2 * (precision .* recall) ./ (precision + recall);
+
+% Calculate overall metrics
+overallPrecision = mean(precision, 'omitnan');
+overallRecall = mean(recall, 'omitnan');
+overallF1Score = mean(f1Score, 'omitnan');
+
+%% Display Results
+fprintf('Confusion Matrix:\n');
+confusionMat
+fprintf('Accuracy: %.2f%%\n', accuracy * 100);
+fprintf('Overall Precision: %.2f\n', overallPrecision);
+fprintf('Overall Recall: %.2f\n', overallRecall);
+fprintf('Overall F1 Score: %.2f\n', overallF1Score);
+
+%% Helper Functions
+function [J, grad] = costFunctionWeighted(theta, X, y, weights)
+    m = length(y);
+    h = sigmoid(X * theta);
+    reg_lambda = 1; % Regularization parameter
+    J = (1 / m) * sum(weights .* (-y .* log(h) - (1 - y) .* log(1 - h))) + (reg_lambda / (2 * m)) * sum(theta(2:end).^2);
+    grad = (1 / m) * (X' * (weights .* (h - y))) + (reg_lambda / m) * [0; theta(2:end)];
+end
+
 function g = sigmoid(z)
     g = 1 ./ (1 + exp(-z));
 end
